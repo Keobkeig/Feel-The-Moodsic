@@ -10,14 +10,26 @@ import joblib
 import serial
 import colormap
 import time
-
-# Establish serial connection with Arduino
-ser = serial.Serial('/dev/tty.usbmodem1101', 9600, timeout=1)  
-time.sleep(2)  # Wait for the serial connection to initialize
+import argparse
 
 # Configuration
 RECORD_DURATION = 5  # seconds
 IMAGE_SIZE = 400
+
+parser = argparse.ArgumentParser(description="Music Mood Visualizer")
+parser.add_argument('--arduino', action='store_true', help='Enable Arduino hardware integration')
+args = parser.parse_args()
+ENABLE_ARDUINO = args.arduino
+
+if ENABLE_ARDUINO:
+    try:
+        ser = serial.Serial('/dev/tty.usbmodem1101', 9600, timeout=1)
+        time.sleep(2)
+        print("[Arduino] Serial connection established")    
+    except Exception as e:
+        print(f"[Arduino] Failed to initialize serial connection: {e}")
+        ENABLE_ARDUINO = False
+
 
 genre_features = {
     'Afrobeats': [0.85, 0.92, 0.88, 0.15, 0.25],  
@@ -99,17 +111,15 @@ async def recognize_song_shazam(filename):
     except Exception as e:
         print(f"Shazam error: {e}")
         return None
-
+        
 def display_results(track_info, soft_valence, soft_energy):
-    # display_map = cv2.imread("emo_map.png")
     display_map = cv2.imread("colormap.png")
-
+    
     # Map emotions to the image
     h, w, _ = display_map.shape
     y_center, x_center = int(h / 2), int(w / 2)
     y = y_center - int((h/2) * soft_energy)
     x = x_center + int((w/2) * soft_valence)
-
     radius = 20
 
     # Get the median color in the selected region
@@ -119,22 +129,20 @@ def display_results(track_info, soft_valence, soft_energy):
     # Draw the selected point on the map
     display_map = cv2.circle(display_map, (x, y), radius, (r, g, b), -1)
     display_map = cv2.circle(display_map, (x, y), radius, (255, 255, 255), 2)
-    
     cv2.imshow('Music Recognition', display_map)
     cv2.waitKey(5000)
 
-    # Send only RGB values to Arduino
-    color_message = f"{r},{g},{b}\n"
-    ser.write(color_message.encode())  
+    if ENABLE_ARDUINO:
+        try:
+            ser.write(f"{r},{g},{b}\n".encode())
+            ser.write(f"{track_info['title']}\n{track_info['artist']}\n".encode())
+            print(f"Sent RGB ({r}, {g}, {b}) and song info to Arduino")
+        except Exception as e:
+            print(f"[Arduino] Communication failed: {e}")
 
-    # Send song title & emotion separately
-    song_message = f"{track_info['title']}\n{track_info['artist']}\n"
-    # ser.write(song_message.encode())  
-
-    print(f"Sent RGB ({r}, {g}, {b}) to Arduino")
-    print(f"Sent Song Info: {track_info['title']} by {track_info['artist']}")
-
-    time.sleep(0.05)  # Small delay
+    print(f"Track: {track_info['title']} by {track_info['artist']}")
+    time.sleep(0.05) # small delay
+    
 
 async def main():
     cv2.namedWindow('Music Recognition', cv2.WINDOW_NORMAL)
@@ -150,8 +158,8 @@ async def main():
         if filename:
             print("Analyzing audio...")
             result = await recognize_song_shazam(filename)
-            if not ser.is_open:
-                ser.open()
+            # if not ser.is_open:
+            #     ser.open()
             if result and 'track' in result:
                 track_info = {
                     'title': result['track']['title'],
@@ -168,12 +176,11 @@ async def main():
                 valence = genre_predictions[genre]['valence']
                 energy, valence = interpolate(valence, energy)
                 display_results(track_info, valence, energy)
-                ser.close()
+                if ENABLE_ARDUINO and ser.is_open:
+                    ser.close()
             else:
                 print("No song recognized")
     
-    
-
 def interpolate(valence, energy):
     # Interpolate between emotions from 0-1 range to -1-1 range
     x = (2 * valence) - 1
